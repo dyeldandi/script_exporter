@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
+	dto "github.com/prometheus/client_model/go"
 )
 
 type scriptResult struct {
@@ -28,7 +29,17 @@ type scriptResult struct {
 	exitCode  int
 	cached    int
 	output    string
+	metrics   map[string]*dto.MetricFamily
 }
+
+func (sr *scriptResult) GetMetrics() map[string]*dto.MetricFamily {
+	return sr.metrics
+}
+
+func (sr *scriptResult) GetSTime() time.Time {
+	return sr.startTime
+}
+
 
 var (
 	metricScriptUnknownTotal = promauto.NewCounter(prometheus.CounterOpts{
@@ -41,6 +52,11 @@ var (
 		Name:      "http_requests_inflight",
 		Help:      "Number of HTTP inflight requests, partitioned by script.",
 	}, []string{"script"})
+	metricAutorunInflight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "script_exporter",
+		Name:      "autorun_executions_inflight",
+                Help:      "Number of autorun inflight executions, partitioned by script.",
+        }, []string{"script"}) 
 	metricReqCount = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "script_exporter",
 		Name:      "http_requests_total",
@@ -91,6 +107,85 @@ func Handler(w http.ResponseWriter, r *http.Request, c *config.Config, logger *s
 	}
 }
 
+func CronHandler(c *config.Config, logger *slog.Logger, logEnv bool, scriptTimeoutOffset float64, scriptNoArgs bool) {
+	for _, script := range c.Scripts {
+		
+		if script.Autorun.Interval == 0 {
+			continue
+		}
+		if cachedResult := getCronCacheResult(&script, false); cachedResult == nil || time.Now().Sub(cachedResult.startTime).Seconds() > script.Autorun.Interval {
+			if getCronInflight(&script) < script.Autorun.MaxInstances || script.Autorun.MaxInstances == 0 {
+				go func() {
+					metricAutorunInflight.WithLabelValues(script.Name).Inc()
+					defer metricAutorunInflight.WithLabelValues(script.Name).Dec()
+					incCronInflight(&script)
+					defer decCronInflight(&script)
+					start := time.Now()
+					output := handleScriptFromCron(&script, logger, logEnv)
+					logger.Debug("Script was run", slog.Duration("duration", time.Since(start)), slog.String("output", output))
+					metricReqCount.WithLabelValues(script.Name).Inc()
+					metricReqDurationSeconds.WithLabelValues(script.Name).Observe(time.Since(start).Seconds())
+				}()
+			} else {
+				logger.Info("Not running scipt, autorun_max_instances is reached", slog.String("script", script.Name), slog.Int("instances", script.Autorun.MaxInstances))
+			}
+		}
+	}
+}
+
+func handleScriptFromCron(script *config.Script, logger *slog.Logger, logEnv bool) string {
+
+	result := scriptResult {
+		startTime: time.Now(),
+		success:   1,
+		exitCode:  -1,
+		cached:    0,
+		output:    "",
+		metrics:   nil,
+	}
+
+	// Get the timeout from either Prometheus's HTTP header or a URL query
+	// parameter, clamped to a maximum specified through the configuration file.
+	timeout := script.Timeout.MaxTimeout
+
+	// Append arguments passed via scrape query parameters to the arguments
+	// defined in the script configuration.
+	runArgs := []string{}
+	if script.Sudo {
+		runArgs = append(runArgs, "sudo")
+	}
+	runArgs = append(runArgs, script.Command...)
+	runArgs = append(runArgs, script.Args...)
+
+	// Get environment variables which should be set for the script from the
+	// script configuration and the query parameters. If the allow_env_overwrite
+	// option is set to true we overwrite environment variables from the script
+	// configuration with the values from the query parameters.
+	runEnv := make(map[string]string)
+	for key, val := range script.Env {
+		runEnv[key] = val
+	}
+
+	output, exitCode, err := runScript(script, logger, logEnv, timeout, runArgs, runEnv)
+	result.exitCode = exitCode
+	result.output, result.metrics = getFormattedOutput(script, logger, output, err)
+
+	if err != nil {
+		result.success = 0
+
+		if script.Autorun.SaveOnError {
+			setCronCacheResult(script, result)
+		}
+
+		return result.output
+	}
+
+	setCronCacheResult(script, result)
+	return result.output
+}
+
+
+
 func handleScript(script *config.Script, params url.Values, logger *slog.Logger, logEnv bool, prometheusTimeout string, scriptTimeoutOffset float64, scriptNoArgs bool) string {
 	// Get parameters, if the scriptNoArgs flag is set to true, we do not add
 	// arguments from the params query parameter to the script.
@@ -106,12 +201,13 @@ func handleScript(script *config.Script, params url.Values, logger *slog.Logger,
 		}
 	}
 
-	result := scriptResult{
+	result := scriptResult {
 		startTime: time.Now(),
 		success:   1,
 		exitCode:  -1,
 		cached:    0,
 		output:    "",
+		metrics:   nil,
 	}
 
 	// Check if the result of the script is cached and not stale. If this is the
@@ -155,7 +251,7 @@ func handleScript(script *config.Script, params url.Values, logger *slog.Logger,
 
 	output, exitCode, err := runScript(script, logger, logEnv, timeout, runArgs, runEnv)
 	result.exitCode = exitCode
-	result.output = getFormattedOutput(script, logger, output, err)
+	result.output, result.metrics = getFormattedOutput(script, logger, output, err)
 
 	if err != nil {
 		result.success = 0
@@ -316,47 +412,56 @@ func runScript(script *config.Script, logger *slog.Logger, logEnv bool, timeout 
 	return stdout.String(), 0, nil
 }
 
-func getFormattedOutput(script *config.Script, logger *slog.Logger, output string, err error) string {
+
+
+func getFormattedOutput(script *config.Script, logger *slog.Logger, output string, err error) (string, map[string]*dto.MetricFamily) {
+	var formattedOutput string
+	var buf = new(bytes.Buffer)
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	parser := expfmt.NewTextParser(model.UTF8Validation)
+	allparsed := make(map[string]*dto.MetricFamily, 0)
+
 	if script.Output.Ignore {
-		return ""
+		return "", allparsed
 	}
 
 	if err != nil && script.Output.IgnoreOnError {
-		return ""
+		return "", allparsed
 	}
 
-	var formattedOutput string
 
-	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		if len(scanner.Text()) == 0 {
 			continue
 		}
 
-		if isValidOutput(script, fmt.Sprintf("%s\n", scanner.Text()), logger) {
-			formattedOutput += fmt.Sprintf("%s\n", scanner.Text())
+		parsed, err := parser.TextToMetricFamilies(strings.NewReader(output))
+                if err != nil {
+                        logger.Debug("Error parsing metric families", slog.String("script", script.Name), slog.String("output", output), slog.Any("error", err))
+                        return "", allparsed
+                }
+
+		for i:=range parsed {
+			for j:=0; j<len(parsed[i].Metric); j++ {
+				for lname, lvalue := range script.AddLabels {
+					lp := new(dto.LabelPair)
+					lp.Name = &lname
+					lp.Value = &lvalue
+					parsed[i].Metric[j].Label = append(parsed[i].Metric[j].Label, lp)
+				}
+                                if script.AddPrefix != ""{
+					newname := strings.TrimRight(script.AddPrefix, ".")+"."+*parsed[i].Name
+					parsed[i].Name = &newname
+				}
+			}
+			expfmt.MetricFamilyToText(buf, parsed[i])
 		}
+		formattedOutput += buf.String()
+		for k, v := range parsed { allparsed[k] = v }
 	}
 
-	return formattedOutput
+	return formattedOutput, allparsed
 }
 
-func isValidOutput(script *config.Script, output string, logger *slog.Logger) bool {
-	logger.Debug("Validating script output", slog.String("script", script.Name), slog.String("output", output))
 
-	defer func() {
-		if recover() != nil {
-			return
-		}
-	}()
-
-	parser := expfmt.NewTextParser(model.UTF8Validation)
-
-	_, err := parser.TextToMetricFamilies(strings.NewReader(output))
-	if err != nil {
-		logger.Debug("Error parsing metric families", slog.String("script", script.Name), slog.String("output", output), slog.Any("error", err))
-		return false
-	}
-
-	return true
-}

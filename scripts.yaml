@@ -18,10 +18,20 @@ scripts:
   - name: sleep
     command:
       - ./prober/scripts/sleep.sh
+    args:
+      - 1
     timeout:
-      max_timeout: 10
+      max_timeout: 9
       enforced: true
       wait_delay: 0.01
+    autorun:
+      interval: 2.0
+      max_instances: 1
+      expire: 10.0
+    add_labels:
+      machine: VAZ2109
+      project: agesage
+    add_prefix: sleep_command
     discovery:
       params:
         seconds: "20"

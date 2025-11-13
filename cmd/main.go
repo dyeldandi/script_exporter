@@ -44,10 +44,34 @@ var (
 	discoveryPort        = kingpin.Flag("discovery.port", "Port for service discovery.").Default("").String()
 	discoveryScheme      = kingpin.Flag("discovery.scheme", "Scheme for service discovery.").Default("").String()
 	toolkitFlags         = webflag.AddFlags(kingpin.CommandLine, ":9469")
+	
 )
+
+type autorunCollector struct {
+}
+
+func (c *autorunCollector) Describe(ch chan<- *prometheus.Desc) {
+	promslogConfig := &promslog.Config{}
+	logger := promslog.New(promslogConfig)
+	logger.Info("Describe ME")
+}
+
+func (c *autorunCollector) Collect(ch chan<- prometheus.Metric) {
+	promslogConfig := &promslog.Config{}
+	logger := promslog.New(promslogConfig)
+	logger.Info("Collect ME")
+	for _, m := range prober.CronCollect(sc.C.Scripts) {
+		ch <- *m
+	}
+}
+
+
+
 
 func init() {
 	prometheus.MustRegister(versioncollector.NewCollector("script_exporter"))
+	auCollector := &autorunCollector{}
+	prometheus.MustRegister(auCollector)
 }
 
 func run(stopCh chan bool) int {
@@ -219,6 +243,7 @@ func run(stopCh chan bool) int {
 	}
 	srvc := make(chan struct{})
 	term := make(chan os.Signal, 1)
+        ticker := time.NewTicker(time.Second)
 	signal.Notify(term, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
@@ -230,6 +255,12 @@ func run(stopCh chan bool) int {
 
 	for {
 		select {
+		case <-ticker.C:
+			sc.Lock()
+			config := sc.C
+			sc.Unlock()
+			prober.CronHandler(config, logger, *logEnv, *scriptTimeoutOffset, *scriptNoArgs)
+
 		case <-stopCh:
 			logger.Info("Service received stop message...")
 			return 0

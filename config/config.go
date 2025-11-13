@@ -41,6 +41,16 @@ type Script struct {
 	Timeout           Timeout           `yaml:"timeout"`
 	Cache             Cache             `yaml:"cache"`
 	Discovery         Discovery         `yaml:"discovery"`
+	Autorun           Autorun           `yaml:"autorun"`
+	AddLabels         map[string]string `yaml:"add_labels"`
+	AddPrefix         string            `yaml:"add_prefix"`
+}
+
+type Autorun struct {
+	Interval        float64           `yaml:"interval"`
+	Expire          float64           `yaml:"expire"`
+	MaxInstances    int               `yaml:"max_instances"`
+	SaveOnError     bool              `yaml:"save_on_error"`
 }
 
 type Output struct {
