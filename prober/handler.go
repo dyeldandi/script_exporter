@@ -62,12 +62,24 @@ var (
 		Name:      "http_requests_total",
 		Help:      "Number of HTTP requests processed, partitioned by script.",
 	}, []string{"script"})
+	metricAutorunCount = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "script_exporter",
+		Name:      "autorun_executions_total",
+		Help:      "Number of autorun executions processed, partitioned by script.",
+	}, []string{"script"})
 	metricReqDurationSeconds = promauto.NewSummaryVec(prometheus.SummaryOpts{
 		Namespace:  "script_exporter",
 		Name:       "http_request_duration_seconds",
 		Help:       "Latency of HTTP requests processed, partitioned by script.",
 		Objectives: map[float64]float64{0.25: 0.05, 0.5: 0.05, 0.75: 0.02, 0.9: 0.01, 0.99: 0.001, 1.0: 0.001},
 	}, []string{"script"})
+	metricAutorunDurationSeconds = promauto.NewSummaryVec(prometheus.SummaryOpts{
+		Namespace:  "script_exporter",
+		Name:       "autorun_executions_duration_seconds",
+		Help:       "Latency of autorun executions processed, partitioned by script.",
+		Objectives: map[float64]float64{0.25: 0.05, 0.5: 0.05, 0.75: 0.02, 0.9: 0.01, 0.99: 0.001, 1.0: 0.001},
+	}, []string{"script"})
+
 )
 
 func Handler(w http.ResponseWriter, r *http.Request, c *config.Config, logger *slog.Logger, logEnv bool, scriptTimeoutOffset float64, scriptNoArgs bool) {
@@ -123,8 +135,8 @@ func CronHandler(c *config.Config, logger *slog.Logger, logEnv bool, scriptTimeo
 					start := time.Now()
 					output := handleScriptFromCron(&script, logger, logEnv)
 					logger.Debug("Script was run", slog.Duration("duration", time.Since(start)), slog.String("output", output))
-					metricReqCount.WithLabelValues(script.Name).Inc()
-					metricReqDurationSeconds.WithLabelValues(script.Name).Observe(time.Since(start).Seconds())
+					metricAutorunCount.WithLabelValues(script.Name).Inc()
+					metricAutorunDurationSeconds.WithLabelValues(script.Name).Observe(time.Since(start).Seconds())
 				}()
 			} else {
 				logger.Info("Not running scipt, autorun_max_instances is reached", slog.String("script", script.Name), slog.Int("instances", script.Autorun.MaxInstances))

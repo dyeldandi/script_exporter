@@ -105,6 +105,15 @@ func setCronCacheResult(script *config.Script, result scriptResult) {
                         prommetrics = append(prommetrics, &newmetric)
                 }
         }
+	m1 := prometheus.MustNewConstMetric(prometheus.NewDesc("script_success", "Script exit status (0 = error, 1 = success).", []string{"script"}, nil),
+                prometheus.GaugeValue, float64(result.success), script.Name)
+	prommetrics = append(prommetrics, &m1)
+	m2 := prometheus.MustNewConstMetric(prometheus.NewDesc("script_duration_seconds", "Script execution time, in seconds.", []string{"script"}, nil),
+		prometheus.GaugeValue, time.Since(result.startTime).Seconds(), script.Name)
+	prommetrics = append(prommetrics, &m2)
+	m3 := prometheus.MustNewConstMetric(prometheus.NewDesc("script_exit_code", "Script execution time, in seconds.", []string{"script"}, nil),
+		prometheus.GaugeValue, float64(result.exitCode), script.Name)
+	prommetrics = append(prommetrics, &m3)
 
 
 	cronCache[getCronCacheKey(script)] = cronCacheEntry{
