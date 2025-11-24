@@ -51,15 +51,9 @@ type autorunCollector struct {
 }
 
 func (c *autorunCollector) Describe(ch chan<- *prometheus.Desc) {
-	promslogConfig := &promslog.Config{}
-	logger := promslog.New(promslogConfig)
-	logger.Info("Describe ME")
 }
 
 func (c *autorunCollector) Collect(ch chan<- prometheus.Metric) {
-	promslogConfig := &promslog.Config{}
-	logger := promslog.New(promslogConfig)
-	logger.Info("Collect ME")
 	for _, m := range prober.CronCollect(sc.C.Scripts) {
 		ch <- *m
 	}

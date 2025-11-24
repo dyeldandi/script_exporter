@@ -1,7 +1,6 @@
 package prober
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -125,7 +124,8 @@ func CronHandler(c *config.Config, logger *slog.Logger, logEnv bool, scriptTimeo
 		if script.Autorun.Interval == 0 {
 			continue
 		}
-		if cachedResult := getCronCacheResult(&script, false); cachedResult == nil || time.Now().Sub(cachedResult.startTime).Seconds() > script.Autorun.Interval {
+		cachedResult := getCronCacheResult(&script, false)
+		if cachedResult == nil || time.Now().Sub(cachedResult.startTime).Seconds() > script.Autorun.Interval {
 			if getCronInflight(&script) < script.Autorun.MaxInstances || script.Autorun.MaxInstances == 0 {
 				go func() {
 					metricAutorunInflight.WithLabelValues(script.Name).Inc()
@@ -133,7 +133,7 @@ func CronHandler(c *config.Config, logger *slog.Logger, logEnv bool, scriptTimeo
 					incCronInflight(&script)
 					defer decCronInflight(&script)
 					start := time.Now()
-					output := handleScriptFromCron(&script, logger, logEnv)
+					output := handleScriptFromCron(&script, logger, logEnv, cachedResult == nil)
 					logger.Debug("Script was run", slog.Duration("duration", time.Since(start)), slog.String("output", output))
 					metricAutorunCount.WithLabelValues(script.Name).Inc()
 					metricAutorunDurationSeconds.WithLabelValues(script.Name).Observe(time.Since(start).Seconds())
@@ -145,7 +145,7 @@ func CronHandler(c *config.Config, logger *slog.Logger, logEnv bool, scriptTimeo
 	}
 }
 
-func handleScriptFromCron(script *config.Script, logger *slog.Logger, logEnv bool) string {
+func handleScriptFromCron(script *config.Script, logger *slog.Logger, logEnv bool, firstExec bool) string {
 
 	result := scriptResult {
 		startTime: time.Now(),
@@ -178,9 +178,16 @@ func handleScriptFromCron(script *config.Script, logger *slog.Logger, logEnv boo
 		runEnv[key] = val
 	}
 
+	if firstExec {
+		setCronCacheResult(script, result)
+	}
+
 	output, exitCode, err := runScript(script, logger, logEnv, timeout, runArgs, runEnv)
 	result.exitCode = exitCode
+	logger.Debug("Getting formatted output")
 	result.output, result.metrics = getFormattedOutput(script, logger, output, err)
+
+	logger.Debug("Got formatted output")
 
 	if err != nil {
 		result.success = 0
@@ -430,7 +437,6 @@ func getFormattedOutput(script *config.Script, logger *slog.Logger, output strin
 	var formattedOutput string
 	var buf = new(bytes.Buffer)
 
-	scanner := bufio.NewScanner(strings.NewReader(output))
 	parser := expfmt.NewTextParser(model.UTF8Validation)
 	allparsed := make(map[string]*dto.MetricFamily, 0)
 
@@ -442,36 +448,32 @@ func getFormattedOutput(script *config.Script, logger *slog.Logger, output strin
 		return "", allparsed
 	}
 
+	parsed, err := parser.TextToMetricFamilies(strings.NewReader(output))
+	
+        if err != nil {
+                logger.Debug("Error parsing metric families", slog.String("script", script.Name), slog.String("output", output), slog.Any("error", err))
+                return "", allparsed
+        }
 
-	for scanner.Scan() {
-		if len(scanner.Text()) == 0 {
-			continue
-		}
-
-		parsed, err := parser.TextToMetricFamilies(strings.NewReader(output))
-                if err != nil {
-                        logger.Debug("Error parsing metric families", slog.String("script", script.Name), slog.String("output", output), slog.Any("error", err))
-                        return "", allparsed
-                }
-
-		for i:=range parsed {
-			for j:=0; j<len(parsed[i].Metric); j++ {
-				for lname, lvalue := range script.AddLabels {
-					lp := new(dto.LabelPair)
-					lp.Name = &lname
-					lp.Value = &lvalue
-					parsed[i].Metric[j].Label = append(parsed[i].Metric[j].Label, lp)
-				}
-                                if script.AddPrefix != ""{
-					newname := strings.TrimRight(script.AddPrefix, ".")+"."+*parsed[i].Name
-					parsed[i].Name = &newname
-				}
+	for i:=range parsed {
+		for j:=0; j<len(parsed[i].Metric); j++ {
+			for lname, lvalue := range script.AddLabels {
+				lp := new(dto.LabelPair)
+				lp.Name = &lname
+				lp.Value = &lvalue
+				parsed[i].Metric[j].Label = append(parsed[i].Metric[j].Label, lp)
 			}
-			expfmt.MetricFamilyToText(buf, parsed[i])
 		}
-		formattedOutput += buf.String()
-		for k, v := range parsed { allparsed[k] = v }
+
+                if script.AddPrefix != ""{
+			newname := strings.TrimRight(script.AddPrefix, "_")+"_"+*parsed[i].Name
+			parsed[i].Name = &newname
+		}
+
+		expfmt.MetricFamilyToText(buf, parsed[i])
 	}
+	formattedOutput += buf.String()
+	for k, v := range parsed { allparsed[k] = v }
 
 	return formattedOutput, allparsed
 }

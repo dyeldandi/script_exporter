@@ -14,6 +14,7 @@ import (
 var cronCache map[string]cronCacheEntry
 var cronInflights map[string]int
 var cronCacheLock = sync.RWMutex{}
+var cronInflightCacheLock = sync.RWMutex{}
 
 type cronCacheEntry struct {
 	cacheTime time.Time
@@ -124,6 +125,8 @@ func setCronCacheResult(script *config.Script, result scriptResult) {
 }
 
 func CronCollect(scripts []config.Script) []*prometheus.Metric {
+	cronCacheLock.Lock()
+	defer cronCacheLock.Unlock()
 	prommetrics := make([]*prometheus.Metric, 0)
 	if cronCache == nil {
 		return prommetrics
@@ -147,16 +150,23 @@ func CronCollect(scripts []config.Script) []*prometheus.Metric {
 }
 
 func getCronInflight(script *config.Script) int {
+        cronInflightCacheLock.RLock()
+        defer cronInflightCacheLock.RUnlock()
+
 	if cronInflights == nil {
 		cronInflights = make(map[string]int)
 	}
 	if ci, ok := cronInflights[getCronCacheKey(script)]; ok {
 		return ci
 	}
+	cronInflights[getCronCacheKey(script)] = 0
 	return 0
 }
 
 func incCronInflight(script *config.Script) {
+        cronInflightCacheLock.RLock()
+        defer cronInflightCacheLock.RUnlock()
+
 	if cronInflights == nil {
 		cronInflights = make(map[string]int)
 	}
@@ -168,6 +178,9 @@ func incCronInflight(script *config.Script) {
 }
 
 func decCronInflight(script *config.Script) {
+        cronInflightCacheLock.RLock()
+        defer cronInflightCacheLock.RUnlock()
+
 	if cronInflights == nil {
 		cronInflights = make(map[string]int)
 	}
