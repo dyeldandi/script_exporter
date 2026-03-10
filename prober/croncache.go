@@ -164,8 +164,8 @@ func getCronInflight(script *config.Script) int {
 }
 
 func incCronInflight(script *config.Script) {
-        cronInflightCacheLock.RLock()
-        defer cronInflightCacheLock.RUnlock()
+        cronInflightCacheLock.Lock()
+        defer cronInflightCacheLock.Unlock()
 
 	if cronInflights == nil {
 		cronInflights = make(map[string]int)
@@ -178,8 +178,8 @@ func incCronInflight(script *config.Script) {
 }
 
 func decCronInflight(script *config.Script) {
-        cronInflightCacheLock.RLock()
-        defer cronInflightCacheLock.RUnlock()
+        cronInflightCacheLock.Lock()
+        defer cronInflightCacheLock.Unlock()
 
 	if cronInflights == nil {
 		cronInflights = make(map[string]int)

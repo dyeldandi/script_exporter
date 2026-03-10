@@ -17,21 +17,21 @@ scripts:
       - ./prober/scripts/docker.sh
   - name: sleep
     command:
-      - ./prober/scripts/sleep.sh
+      - cat
     args:
-      - 1
+      - crawlers.txt
     timeout:
       max_timeout: 9
       enforced: true
       wait_delay: 0.01
     autorun:
-      interval: 2.0
+      interval: 1.0
       max_instances: 1
-      expire: 10.0
+      expire: 100.0
     add_labels:
       machine: VAZ2109
       project: agesage
-    add_prefix: sleep_command
+    add_prefix: script_prefix
     discovery:
       params:
         seconds: "20"
