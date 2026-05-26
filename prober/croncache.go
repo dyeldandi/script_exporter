@@ -110,7 +110,7 @@ func setCronCacheResult(script *config.Script, result scriptResult) {
                 prometheus.GaugeValue, float64(result.success), script.Name)
 	prommetrics = append(prommetrics, &m1)
 	m2 := prometheus.MustNewConstMetric(prometheus.NewDesc("script_duration_seconds", "Script execution time, in seconds.", []string{"script"}, nil),
-		prometheus.GaugeValue, time.Since(result.startTime).Seconds(), script.Name)
+		prometheus.GaugeValue, result.durationSeconds, script.Name)
 	prommetrics = append(prommetrics, &m2)
 	m3 := prometheus.MustNewConstMetric(prometheus.NewDesc("script_exit_code", "Script execution time, in seconds.", []string{"script"}, nil),
 		prometheus.GaugeValue, float64(result.exitCode), script.Name)
@@ -150,17 +150,13 @@ func CronCollect(scripts []config.Script) []*prometheus.Metric {
 }
 
 func getCronInflight(script *config.Script) int {
-        cronInflightCacheLock.RLock()
-        defer cronInflightCacheLock.RUnlock()
+        cronInflightCacheLock.Lock()
+        defer cronInflightCacheLock.Unlock()
 
 	if cronInflights == nil {
 		cronInflights = make(map[string]int)
 	}
-	if ci, ok := cronInflights[getCronCacheKey(script)]; ok {
-		return ci
-	}
-	cronInflights[getCronCacheKey(script)] = 0
-	return 0
+	return cronInflights[getCronCacheKey(script)]
 }
 
 func incCronInflight(script *config.Script) {

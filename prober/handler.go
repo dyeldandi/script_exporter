@@ -23,12 +23,13 @@ import (
 )
 
 type scriptResult struct {
-	startTime time.Time
-	success   int
-	exitCode  int
-	cached    int
-	output    string
-	metrics   map[string]*dto.MetricFamily
+	startTime       time.Time
+	durationSeconds float64
+	success         int
+	exitCode        int
+	cached          int
+	output          string
+	metrics         map[string]*dto.MetricFamily
 }
 
 func (sr *scriptResult) GetMetrics() map[string]*dto.MetricFamily {
@@ -127,10 +128,10 @@ func CronHandler(c *config.Config, logger *slog.Logger, logEnv bool, scriptTimeo
 		cachedResult := getCronCacheResult(&script, false)
 		if cachedResult == nil || time.Now().Sub(cachedResult.startTime).Seconds() > script.Autorun.Interval {
 			if getCronInflight(&script) < script.Autorun.MaxInstances || script.Autorun.MaxInstances == 0 {
+				incCronInflight(&script)
+				metricAutorunInflight.WithLabelValues(script.Name).Inc()
 				go func() {
-					metricAutorunInflight.WithLabelValues(script.Name).Inc()
 					defer metricAutorunInflight.WithLabelValues(script.Name).Dec()
-					incCronInflight(&script)
 					defer decCronInflight(&script)
 					start := time.Now()
 					output := handleScriptFromCron(&script, logger, logEnv, cachedResult == nil)
@@ -184,6 +185,7 @@ func handleScriptFromCron(script *config.Script, logger *slog.Logger, logEnv boo
 
 	output, exitCode, err := runScript(script, logger, logEnv, timeout, runArgs, runEnv)
 	result.exitCode = exitCode
+	result.durationSeconds = time.Since(result.startTime).Seconds()
 	logger.Debug("Getting formatted output")
 	result.output, result.metrics = getFormattedOutput(script, logger, output, err)
 
